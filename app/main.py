@@ -1,6 +1,5 @@
-from alembic import op
 from fastapi import FastAPI
-from app.users.router import router as router_users
+from app.auth.router import router as router_users
 
 
 app = FastAPI()
