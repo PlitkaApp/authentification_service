@@ -1,19 +1,21 @@
-from fastapi import Depends, HTTPException, status
+from typing import Any, Coroutine
+
+from fastapi import Depends, HTTPException, status, Cookie
 from passlib.context import CryptContext
 
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 
-from passlib.exc import InvalidTokenError
-
 from app.config import get_auth_data
 
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import OAuth2PasswordBearer, HTTPAuthorizationCredentials
 from app.users.dao import UsersDAO
 
 
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-http_bearer = HTTPBearer(auto_error=False)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/auth/login/')
+
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
@@ -21,6 +23,17 @@ def get_password_hash(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+
+def encode_jwt(payload: dict):
+    auth_data = get_auth_data()
+    token = jwt.encode(payload, auth_data['secret_key'], auth_data['algorithm'])
+    return token
+
+def decode_jwt(token):
+    auth_data = get_auth_data()
+    decoded = jwt.decode(token, auth_data['public_key'], auth_data['algorithm'])
+    return decoded
 
 
 def create_access_token(user_id: str, roles: list[str]) -> str:
@@ -33,8 +46,7 @@ def create_access_token(user_id: str, roles: list[str]) -> str:
         'iat': datetime.now(timezone.utc)
     }
 
-    auth_data = get_auth_data()
-    access_token = jwt.encode(payload, auth_data['secret_key'], algorithm=auth_data['algorithm'])
+    access_token = encode_jwt(payload)
     return access_token
 
 
@@ -47,15 +59,8 @@ def create_refresh_token(user_id: str) -> str:
         "iat": datetime.now(timezone.utc)
     }
 
-    auth_data = get_auth_data()
-    refresh_token = jwt.encode(payload, auth_data['secret_key'], algorithm=auth_data['algorithm'])
+    refresh_token = encode_jwt(payload)
     return refresh_token
-
-
-def decode_jwt(token):
-    auth_data = get_auth_data()
-    decoded = jwt.decode(token, auth_data['secret_key'], auth_data['algorithm'])
-    return decoded
 
 
 async def authenticate_user(login: str, password: str):
@@ -65,30 +70,36 @@ async def authenticate_user(login: str, password: str):
     return user
 
 
-def get_current_token_payload(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
-    try:
-        token = credentials.credentials
-        if not token:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Токен отсутствует')
-        payload = decode_jwt(token=token)
-    except JWTError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Невалидный токен: {str(e)}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Ошибка аутентификации: {str(e)}"
-        )
-    return payload
-
-
 def validate_token_type(payload: dict, token_type: str) -> bool:
     current_token_type = payload['token_type']
     if current_token_type == token_type:
         return True
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Невалидный тип токена '{current_token_type}', ожидался '{token_type}'")
+
+
+async def get_refresh_token(refresh_token: str = Cookie(None)):
+    if not refresh_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Потерян refresh token')
+    return refresh_token
+
+
+async def change_role(user_id: int, new_roles: list[str]) -> Any | None:
+    check = await UsersDAO.update_roles(user_id, new_roles)
+    if check:
+        roles = await UsersDAO.get_user_roles(user_id=user_id)
+        return roles
+    else:
+        return None
+
+
+def get_current_token_payload(token: str = Depends(get_refresh_token)) -> dict:
+    try:
+        payload = decode_jwt(token=token)
+    except JWTError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Невалидный токен: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Ошибка аутентификации: {str(e)}")
+    return payload
 
 
 async def get_user_for_refresh(payload: dict = Depends(get_current_token_payload)) -> dict:
@@ -100,3 +111,16 @@ async def get_user_for_refresh(payload: dict = Depends(get_current_token_payload
     return {'user_id': user_id, 'user_roles': user_roles}
 
 
+class UserGetterFromToken:
+    def __init__(self, token_type: str):
+        self.token_type = token_type
+
+    async def __call__(
+            self,
+            payload: dict = Depends(get_current_token_payload),
+    ):
+        validate_token_type(payload, self.token_type)
+        return await get_user_for_refresh(payload)
+
+
+get_current_auth_user_for_refresh = UserGetterFromToken('refresh')

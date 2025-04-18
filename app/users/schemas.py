@@ -2,6 +2,11 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, validator, EmailStr
 import re
+from typing import List
+
+
+class UpdateRolesRequest(BaseModel):
+    new_roles: List[str]  # Список строковых ролей, например ["admin", "premium"]
 
 
 class SUserRegister(BaseModel):

@@ -1,5 +1,10 @@
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel
+from pathlib import Path
+
+
+BASE_DIR = Path(__file__).parent
 
 
 class Settings(BaseSettings):
@@ -8,8 +13,9 @@ class Settings(BaseSettings):
     DB_NAME: str
     DB_USER: str
     DB_PASSWORD: str
-    SECRET_KEY: str
-    ALGORITHM: str
+    private_key_path: Path = BASE_DIR / "auth" / "certs" / "jwt-private.pem"
+    public_key_path: Path = BASE_DIR / "auth" / "certs" / "jwt-public.pem"
+    algorithm: str = "RS256"
     model_config = SettingsConfigDict (
         env_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
     )
@@ -24,4 +30,6 @@ def get_db_url():
 
 
 def get_auth_data():
-    return {"secret_key": settings.SECRET_KEY, "algorithm": settings.ALGORITHM}
+    return {"secret_key": settings.private_key_path.read_text(),
+            "public_key": settings.public_key_path.read_text(),
+            "algorithm": settings.algorithm}
