@@ -7,6 +7,7 @@ class User(Base):
     login: Mapped[str] = mapped_column(unique=True, nullable=False)
     password: Mapped[str] = mapped_column(nullable=False)
     id: Mapped[int] = mapped_column(primary_key=True)
+    active: Mapped[bool] = mapped_column(nullable=False, default=True, server_default=text('true'))
 
     user: Mapped[bool] = mapped_column(default=True, server_default=text('true'), nullable=False)
     premium: Mapped[bool] = mapped_column(default=False, server_default=text('false'), nullable=False)

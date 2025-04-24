@@ -1,16 +1,35 @@
 services:
   db:
     image: postgres:latest
+    container_name: auth_db  # явное имя контейнера для удобства
     environment:
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_NAME: ${POSTGRES_DB}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5433:5432"
+      - "5433:5432"  # проброс порта 5432 контейнера на 5433 хоста (чтобы не конфликтовать с локальным PG)
     volumes:
-      - pgdata:/var/lib/postgresql/data/pgdata
+      - pgdata:/var/lib/postgresql/data/pgdata  # том для хранения данных
+    restart: unless-stopped  # автоматический перезапуск при падении
+    networks:
+      - app_network  # подключение к специальной сети
+
+  redis:
+    image: redis:latest
+    container_name: redis_blacklist
+    ports:
+      - "6379:6379"  # стандартный порт Redis
+    volumes:
+      - redis_data:/data  # том для хранения данных Redis
+    restart: unless-stopped
+    networks:
+      - app_network
 
 volumes:
-  pgdata:
-    driver: local
+  pgdata:  # том для PostgreSQL
+  redis_data:  # том для Redis
+
+networks:
+  app_network:  # изолированная сеть для сервисов
+    driver: bridge

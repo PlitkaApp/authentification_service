@@ -11,6 +11,7 @@ from app.config import get_auth_data
 from fastapi.security import OAuth2PasswordBearer, HTTPAuthorizationCredentials
 from app.users.dao import UsersDAO
 
+from app.redis_blacklist import token_in_blacklist
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -63,11 +64,16 @@ def create_refresh_token(user_id: str) -> str:
     return refresh_token
 
 
-async def authenticate_user(login: str, password: str):
-    user = await UsersDAO.find_one_or_none(login=login)
-    if not user or verify_password(plain_password=password, hashed_password=user.password) is False:
-        return None
-    return user
+async def validate_token(token: str):
+    payload = decode_jwt(token)
+    user_id = payload['sub']
+    exp_time = datetime.fromtimestamp(payload['exp'], timezone.utc)
+    if exp_time < datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Токен истек")
+    is_token_in_blacklist = await token_in_blacklist(user_id, token)
+    if is_token_in_blacklist:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Токен в blacklist")
+    return True
 
 
 def validate_token_type(payload: dict, token_type: str) -> bool:
@@ -80,16 +86,8 @@ def validate_token_type(payload: dict, token_type: str) -> bool:
 async def get_refresh_token(refresh_token: str = Cookie(None)):
     if not refresh_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Потерян refresh token')
+    await validate_token(refresh_token)
     return refresh_token
-
-
-async def change_role(user_id: int, new_roles: list[str]) -> Any | None:
-    check = await UsersDAO.update_roles(user_id, new_roles)
-    if check:
-        roles = await UsersDAO.get_user_roles(user_id=user_id)
-        return roles
-    else:
-        return None
 
 
 def get_current_token_payload(token: str = Depends(get_refresh_token)) -> dict:
@@ -109,6 +107,33 @@ async def get_user_for_refresh(payload: dict = Depends(get_current_token_payload
     if not user_roles:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Неавторизованный пользователь")
     return {'user_id': user_id, 'user_roles': user_roles}
+
+
+async def get_current_active_user_id(token: str = Depends(oauth2_scheme)) -> int:
+    payload = decode_jwt(token)
+    user_id = int(payload['sub'])
+    user = await UsersDAO.find_one_or_none(id=user_id)
+    await validate_token(token)
+    if user and user.active:
+        return user_id
+    else:
+        return -1
+
+
+async def change_role(new_roles: list[str], user_id: int) -> Any | None:
+    check = await UsersDAO.update_roles(user_id, new_roles)
+    if check:
+        roles = await UsersDAO.get_user_roles(user_id=user_id)
+        return roles
+    else:
+        return None
+
+
+async def authenticate_user(login: str, password: str):
+    user = await UsersDAO.find_one_or_none(login=login)
+    if (not user) or (verify_password(plain_password=password, hashed_password=user.password) is False) or (user.active is False):
+        return None
+    return user
 
 
 class UserGetterFromToken:

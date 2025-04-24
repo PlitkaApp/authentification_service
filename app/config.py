@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     DB_NAME: str
     DB_USER: str
     DB_PASSWORD: str
+    REDIS_HOST: str
+    REDIS_PORT: str
+    REDIS_PASS: str
     private_key_path: Path = BASE_DIR / "auth" / "certs" / "jwt-private.pem"
     public_key_path: Path = BASE_DIR / "auth" / "certs" / "jwt-public.pem"
     algorithm: str = "RS256"
@@ -33,3 +36,6 @@ def get_auth_data():
     return {"secret_key": settings.private_key_path.read_text(),
             "public_key": settings.public_key_path.read_text(),
             "algorithm": settings.algorithm}
+
+def get_redis_url():
+    return (f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/0")

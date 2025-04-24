@@ -1,15 +1,16 @@
 from fastapi import APIRouter, HTTPException, status, Response, Depends
 
 from app.auth.auth import get_password_hash, authenticate_user, create_access_token, create_refresh_token, \
-    get_current_token_payload, get_user_for_refresh, get_refresh_token, decode_jwt, change_role, get_current_auth_user_for_refresh
+    get_refresh_token, decode_jwt, change_role, validate_token, \
+    get_current_auth_user_for_refresh, get_current_active_user_id
 from app.auth.token_schemas import TokenInfo
 from app.users.dao import UsersDAO
+from app.users.models import User
 from app.users.schemas import SUserRegister, SUserAuth, UpdateRolesRequest
 from fastapi.security import OAuth2PasswordRequestForm
-from app.config import get_auth_data
 from app.auth.auth import oauth2_scheme
+from app.redis_blacklist import add_access_token_to_blacklist, add_refresh_token_to_blacklist
 
-from jose import jwt, JWTError
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -58,29 +59,38 @@ async def refresh_access_token(user: dict = Depends(get_current_auth_user_for_re
     )
 
 
-# @router.get('/me/')
-# async def check_payload(payload: dict = Depends(get_current_token_payload)) -> dict:
-#     token_type = payload['token_type']
-#     if token_type != 'access':
-#         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Неверный тип токена: {token_type} ожидался access")
-#     return payload
-
 @router.get("/me/")
 async def read_users_me(token: str = Depends(oauth2_scheme)):
+    await validate_token(token)
     payload = decode_jwt(token)
     return {'user_id': payload['sub'], 'user_roles': payload['role']}
 
 
-@router.put("/update", response_model=TokenInfo, response_model_exclude_none=True)
+@router.put("/roles/update", response_model=TokenInfo, response_model_exclude_none=True)
 async def update_roles(
     request_data: UpdateRolesRequest,  # Данные из тела запроса
-    refresh_token: str = Depends(get_refresh_token)  # Токен из куков/заголовков
+    refresh_token: str = Depends(get_refresh_token), # Токен из куков
+    old_access_token: str = Depends(oauth2_scheme),  # access токен из ouath2
+    user_id = Depends(get_current_active_user_id)
 ):
-    payload = decode_jwt(token=refresh_token)
-    user_id = int(payload['sub'])  # Получаем user_id из токена
-    roles = await change_role(user_id, request_data.new_roles)
+    await validate_token(refresh_token)
+    await add_access_token_to_blacklist(user_id, old_access_token)  # Добавляем старый токен в blacklist
+    await add_refresh_token_to_blacklist(user_id, refresh_token)    # Добавляем refresh токен в blacklist, чтобы пользователь перелогинился
+    roles = await change_role(request_data.new_roles, user_id)
     if not roles:
-        raise HTTPException(status_code=400, detail="Не удалось изменить роль")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не удалось изменить роль")
     print(roles)
-    access_token = create_access_token(str(user_id), roles)
+    access_token = create_access_token(user_id, roles)
     return TokenInfo(access_token=access_token)
+
+
+@router.post("/logout")
+async def logout_user(response: Response,
+                      access_token: str = Depends(oauth2_scheme),
+                      refresh_token: str = Depends(get_refresh_token),
+                      user_id: User = Depends(get_current_active_user_id)):
+    user_id = str(user_id)
+    response.delete_cookie(key="refresh_token")                     # Чистим куки
+    await add_refresh_token_to_blacklist(user_id, refresh_token)    # Добавляем refresh token в blacklist
+    await add_access_token_to_blacklist(user_id, access_token)      # Добавляем access token в blacklist
+    return {"message": "Успешный выход"}
